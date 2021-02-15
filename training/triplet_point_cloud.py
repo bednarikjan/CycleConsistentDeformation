@@ -1,5 +1,5 @@
 import torch
-import useful_losses as loss
+import cyccon.auxiliary.useful_losses as loss
 
 class TripletPointCloud:
     """

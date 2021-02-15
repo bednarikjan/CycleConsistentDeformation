@@ -6,18 +6,18 @@ import torch.utils.data as data
 import os.path
 import json
 import random
-from auxiliary.meter import *
 from joblib import Parallel, delayed
 from collections import defaultdict
 import joblib
 import pickle
 from sklearn.neighbors import NearestNeighbors
-import my_utils
 import time
-import normalize_points
 import torch
-import useful_losses as loss
 
+from cyccon.auxiliary.meter import *
+import cyccon.auxiliary.useful_losses as loss
+import cyccon.auxiliary.normalize_points as normalize_points
+import cyccon.auxiliary.my_utils as my_utils
 
 def unwrap_self(arg, **kwarg):
     return arg[0]._getitem(*(arg[1:]), **kwarg)

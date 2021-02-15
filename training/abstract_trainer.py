@@ -1,26 +1,32 @@
 import torch
 import torch.optim as optim
-import my_utils
 import json
-import visualization
 import os
-import meter
 from termcolor import colored
 import pandas as pd
 import time
 
+# import cyccon.auxiliary.visualization as visualization
+import cyccon.auxiliary.meter as meter
+import cyccon.auxiliary.my_utils as my_utils
+
 class AbstractTrainer(object):
-    def __init__(self, opt):
+    def __init__(self, opt, verbose=True):
         super(AbstractTrainer, self).__init__()
+        self.verbose = verbose
         self.start_time = time.time()
         self.opt = opt
         self.git_repo_path = ""
-        self.start_visdom()
+        # self.start_visdom()
         self.get_log_paths()
         self.init_meters()
         self.reset_epoch()
         self.save_examples = False
-        my_utils.print_arg(self.opt)
+        if verbose:
+            my_utils.print_arg(self.opt)
+        my_utils.save_args(opt, opt.save_path)
+
+        self.total_iters = 0
 
     def commit_experiment(self):
         pass
@@ -33,10 +39,12 @@ class AbstractTrainer(object):
         try:
             with open("commit.txt", 'r') as f:
                 current_commit = f.read()
-                print("git repo path : ", self.git_repo_path)
+                if self.verbose:
+                    print("git repo path : ", self.git_repo_path)
             return self.git_repo_path + current_commit[:-1]
         except:
-            print("git repo path : ", self.git_repo_path)
+            if self.verbose:
+                print("git repo path : ", self.git_repo_path)
             return self.git_repo_path
 
     def init_save_dict(self, opt):
@@ -72,7 +80,8 @@ class AbstractTrainer(object):
             fo.write(html_str)
 
     def start_visdom(self):
-        self.visualizer = visualization.Visualizer(self.opt.port, self.opt.env)
+        # self.visualizer = visualization.Visualizer(self.opt.port, self.opt.env)
+        pass
 
     def get_log_paths(self):
         """
@@ -179,9 +188,14 @@ class AbstractTrainer(object):
         """
         Defines the learning rate schedule
         """
-        if self.epoch == self.opt.lr_decay_1:
+        # if self.epoch == self.opt.lr_decay_1:
+        #     self.optimizer = optim.Adam(self.network.parameters(), lr=self.opt.lrate / 10.0)
+        # if self.epoch == self.opt.lr_decay_2:
+        #     self.optimizer = optim.Adam(self.network.parameters(), lr=self.opt.lrate / 100.0)
+
+        if self.total_iters == self.opt.lr_decay_1:
             self.optimizer = optim.Adam(self.network.parameters(), lr=self.opt.lrate / 10.0)
-        if self.epoch == self.opt.lr_decay_2:
+        if self.total_iters == self.opt.lr_decay_2:
             self.optimizer = optim.Adam(self.network.parameters(), lr=self.opt.lrate / 100.0)
 
     def train_epoch(self):
@@ -198,6 +212,7 @@ class AbstractTrainer(object):
 
     def increment_iteration(self):
         self.iteration = self.iteration + 1
+        self.total_iters += 1
 
     def reset_iteration(self):
         self.iteration = 0

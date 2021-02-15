@@ -1,24 +1,31 @@
-from auxiliary.model_pointnetfeat import *
+from cyccon.auxiliary.model_pointnetfeat import *
+import cyccon.auxiliary.my_utils as my_utils
+
 import collections
-import my_utils
 
 
 class MetaVector(nn.Module):
-    def __init__(self, bottleneck_size=1024, target_size=1024):
+    def __init__(self, bottleneck_size=1024, target_size=1024, batchnorm=True):
+        self._batchnorm = batchnorm
         self.bottleneck_size = bottleneck_size
         self.target_size = target_size
         super(MetaVector, self).__init__()
         self.fc1 = nn.Linear(self.bottleneck_size, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, self.target_size)
-        self.bn1 = nn.BatchNorm1d(512)
-        self.bn2 = nn.BatchNorm1d(256)
+        if batchnorm:
+            self.bn1 = nn.BatchNorm1d(512)
+            self.bn2 = nn.BatchNorm1d(256)
 
     def forward(self, x):
         batchsize = x.size()[0]
         # print(x.size())
-        x = F.relu(self.bn1(self.fc1(x)))
-        x = F.relu(self.bn2(self.fc2(x)))
+        if self._batchnorm:
+            x = F.relu(self.bn1(self.fc1(x)))
+            x = F.relu(self.bn2(self.fc2(x)))
+        else:
+            x = F.relu(self.fc1(x))
+            x = F.relu(self.fc2(x))
         return self.fc3(x)
 
 
@@ -80,19 +87,21 @@ class Meta_FC_Layer_2(nn.Module):
     This corresponds to Arxiv v2 of the paper. x = x bmm weight + bias. It implements a predicted FC.
     """
 
-    def __init__(self, source_size=1024, target_size=1024, activation="ReLU", batchnorm=True, cursor_Wstart=0,
+    def __init__(self, source_size=1024, target_size=1024, activation="ReLU",
+                 batchnorm_layer=True, batchnorm_layer2=True, cursor_Wstart=0,
                  cursor_Wend=1, cursor_Bstart=0, cursor_Bend=1):
         super(Meta_FC_Layer_2, self).__init__()
 
-        self.fc = FC_Layer(source_size, target_size, activation, batchnorm)
+        self.fc = FC_Layer(source_size, target_size, activation, batchnorm_layer)
         self.target_size = target_size
         self.activation = activation
-        self.batchnorm = batchnorm
+        self.batchnorm_l2 = batchnorm_layer2
         self.cursor_Wstart = cursor_Wstart
         self.cursor_Wend = cursor_Wend
         self.cursor_Bstart = cursor_Bstart
         self.cursor_Bend = cursor_Bend
-        self.bn0 = torch.nn.BatchNorm1d(source_size)
+        if self.batchnorm_l2:
+            self.bn0 = torch.nn.BatchNorm1d(source_size)
 
     def forward(self, args):
         x, parameters = args
@@ -107,7 +116,10 @@ class Meta_FC_Layer_2(nn.Module):
         x = x.transpose(2, 1).contiguous()
         x = torch.bmm(x, weight)
         x = x.transpose(2, 1).contiguous()
-        x = F.relu(self.bn0(x))  # + bias
+        if self.batchnorm_l2:
+            x = F.relu(self.bn0(x))  # + bias
+        else:
+            x = F.relu(x)  # + bias
 
         return [self.fc(x), parameters]
 
@@ -156,10 +168,12 @@ class MetaPointGenCon(nn.Module):
 
 class MetaPointGenCon2(nn.Module):
     """
-    This corresponds to Arxiv v2 of the paper. x = x bmm weight + bias. It implements a predicted FC.
+    This corresponds to Arxiv v2 of the paper. x = x bmm weight + bias.
+    It implements a predicted FC.
     """
 
-    def __init__(self, bottleneck_size=2500, hidden_sizes=[256, 256, 256], resnet_layers=True):
+    def __init__(self, bottleneck_size=2500, hidden_sizes=[256, 256, 256],
+                 resnet_layers=True, batchnorm=True):
         self.bottleneck_size = bottleneck_size
         super(MetaPointGenCon2, self).__init__()
         self.hidden_sizes = hidden_sizes
@@ -168,27 +182,32 @@ class MetaPointGenCon2(nn.Module):
         for i in hidden_sizes:
             self.num_parameters = self.num_parameters + i * i + i
 
-        self.parameter_predictor = MetaVector(bottleneck_size, self.num_parameters)
+        self.parameter_predictor = MetaVector(
+            bottleneck_size, self.num_parameters, batchnorm=batchnorm)
 
         hidden_layer = collections.OrderedDict()
-        hidden_layer['fc_0'] = Meta_FC_Layer_2(3, hidden_sizes[0], cursor_Wstart=0, cursor_Wend=9, cursor_Bstart=9,
-                                               cursor_Bend=12)
+        hidden_layer['fc_0'] = Meta_FC_Layer_2(
+            3, hidden_sizes[0], batchnorm_layer=batchnorm,
+            batchnorm_layer2=batchnorm, cursor_Wstart=0, cursor_Wend=9,
+            cursor_Bstart=9, cursor_Bend=12)
         cursor = 12
 
         for i, size in enumerate(hidden_sizes[:-1]):
-            hidden_layer['fc_' + str(i + 1)] = Meta_FC_Layer_2(hidden_sizes[i], hidden_sizes[i + 1],
-                                                               cursor_Wstart=cursor,
-                                                               cursor_Wend=cursor + size * size,
-                                                               cursor_Bstart=cursor + size * size,
-                                                               cursor_Bend=cursor + size + size * size)
+            hidden_layer['fc_' + str(i + 1)] = Meta_FC_Layer_2(
+                hidden_sizes[i], hidden_sizes[i + 1], batchnorm_layer=batchnorm,
+                batchnorm_layer2=batchnorm, cursor_Wstart=cursor,
+                cursor_Wend=cursor + size * size,
+                cursor_Bstart=cursor + size * size,
+                cursor_Bend=cursor + size + size * size)
             cursor = cursor + size * size + size
 
-        hidden_layer['fc_end'] = Meta_FC_Layer_2(hidden_sizes[-1], 3, activation="Tanh", batchnorm=False,
-                                                 cursor_Wstart=cursor,
-                                                 cursor_Wend=cursor + hidden_sizes[-1] * hidden_sizes[-1],
-                                                 cursor_Bstart=cursor + hidden_sizes[-1] * hidden_sizes[-1],
-                                                 cursor_Bend=cursor + hidden_sizes[-1] * hidden_sizes[-1] +
-                                                             hidden_sizes[-1])
+        hidden_layer['fc_end'] = Meta_FC_Layer_2(
+            hidden_sizes[-1], 3, activation="Tanh", batchnorm_layer=False,
+            batchnorm_layer2=batchnorm, cursor_Wstart=cursor,
+            cursor_Wend=cursor + hidden_sizes[-1] * hidden_sizes[-1],
+            cursor_Bstart=cursor + hidden_sizes[-1] * hidden_sizes[-1],
+            cursor_Bend=cursor + hidden_sizes[-1] * hidden_sizes[-1] +
+                        hidden_sizes[-1])
 
         self.hidden_layer = hidden_layer
         self.MLP = nn.Sequential(self.hidden_layer)
@@ -209,7 +228,8 @@ class transpose(nn.Module):
 
 class AE_Meta_AtlasNet(nn.Module):
     def __init__(self, num_points=6890, encoder_type="Pointnet", bottleneck_size=1024, nb_primitives=1,
-                 hidden_sizes=[64, 64, 64, 64, 64], resnet_layers=True, skip_connections=False):
+                 hidden_sizes=[64, 64, 64, 64, 64], resnet_layers=True, skip_connections=False,
+                 batchnorm=True):
         self.hidden_sizes = hidden_sizes
         self.resnet_layers = resnet_layers
         super(AE_Meta_AtlasNet, self).__init__()
@@ -219,21 +239,31 @@ class AE_Meta_AtlasNet(nn.Module):
         self.encoder_type = encoder_type
         print("Using encoder type : " + self.encoder_type)
 
-        self.point_encoder_1 = PointNetfeat(num_points, global_feat=True, trans=False)
-        self.point_encoder_2 = PointNetfeat(num_points, global_feat=True, trans=False)
-        self.encoder = nn.Sequential(self.point_encoder_1,
-                                     nn.Linear(1024, 512),
-                                     nn.BatchNorm1d(512),
-                                     nn.ReLU()
-                                     )
-        self.encoder2 = nn.Sequential(self.point_encoder_2,
-                                      nn.Linear(1024, 512),
-                                      nn.BatchNorm1d(512),
-                                      nn.ReLU()
-                                      )
+        self.point_encoder_1 = PointNetfeat(num_points, global_feat=True, trans=False, batchnorm=batchnorm)
+        self.point_encoder_2 = PointNetfeat(num_points, global_feat=True, trans=False, batchnorm=batchnorm)
+        if batchnorm:
+            self.encoder = nn.Sequential(self.point_encoder_1,
+                                         nn.Linear(1024, 512),
+                                         nn.BatchNorm1d(512),
+                                         nn.ReLU()
+                                         )
+            self.encoder2 = nn.Sequential(self.point_encoder_2,
+                                          nn.Linear(1024, 512),
+                                          nn.BatchNorm1d(512),
+                                          nn.ReLU()
+                                          )
+        else:
+            self.encoder = nn.Sequential(self.point_encoder_1,
+                                         nn.Linear(1024, 512),
+                                         nn.ReLU()
+                                         )
+            self.encoder2 = nn.Sequential(self.point_encoder_2,
+                                          nn.Linear(1024, 512),
+                                          nn.ReLU()
+                                          )
 
         self.decoder = MetaPointGenCon2(bottleneck_size=self.bottleneck_size, hidden_sizes=hidden_sizes,
-                                        resnet_layers=resnet_layers)
+                                        resnet_layers=resnet_layers, batchnorm=batchnorm)
         self.skip_connections = skip_connections
         if self.skip_connections:
             my_utils.yellow_print("Enable Skip_connections in pointcloud MLP")

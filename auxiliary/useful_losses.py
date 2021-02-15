@@ -1,7 +1,7 @@
 import torch
-import my_utils
-import meter
-import extension.dist_chamfer_idx as ext
+import cyccon.auxiliary.meter as meter
+import cyccon.auxiliary.my_utils as my_utils
+import cyccon.extension.dist_chamfer_idx as ext
 
 distChamfer = ext.chamferDist()
 
@@ -135,9 +135,9 @@ def forward_chamfer(network, P1, P2, local_fix=None, latent=False, latent_P1=Non
     P1_tmp = P1.transpose(2, 1).contiguous()
     P2_tmp = P2.transpose(2, 1).contiguous()
     if latent:
-        P2_P1, latent_vector_P1, latent_vector_P2 = network.forward_classic_with_latent(P1_tmp, P2_tmp,
-                                                                                        x_latent=latent_P1,
-                                                                                        y_latent=latent_P2)  # forward pass
+        P2_P1, latent_vector_P1, latent_vector_P2 = \
+            network.forward_classic_with_latent(
+                P1_tmp, P2_tmp, x_latent=latent_P1, y_latent=latent_P2) #forward
     else:
         P2_P1 = network(P1_tmp, P2_tmp)  # forward pass
         # P2_P1 = network(P2_P1, P2.transpose(2, 1).contiguous())  # forward pass (twice forward pass)

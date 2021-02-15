@@ -1,5 +1,5 @@
 import numpy as np
-import auxiliary.meter as meter
+import cyccon.auxiliary.meter as meter
 
 
 def miou_shape(prediction, target, parts):

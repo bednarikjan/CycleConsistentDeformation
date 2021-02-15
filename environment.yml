@@ -1,4 +1,4 @@
-name: sensei
+name: cycleconsist
 channels:
   - plotly
   - conda-forge

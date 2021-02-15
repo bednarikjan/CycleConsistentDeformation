@@ -1,25 +1,35 @@
+# 3rd party
 import torch
 import torch.optim as optim
-import time
-import my_utils
-import model
-import extension.get_chamfer as get_chamfer
-import dataset_shapenet
 from termcolor import colored
-import miou_shape
-import triplet_point_cloud
-import couple_point_cloud
-import useful_losses as loss
-from abstract_trainer import AbstractTrainer
+from torch.utils.tensorboard import SummaryWriter
+
+# Python std.
+import time
+
+# Project files.
+import cyccon.auxiliary.useful_losses as loss
+import cyccon.auxiliary.my_utils as my_utils
+import cyccon.auxiliary.model as model
+import cyccon.extension.get_chamfer as get_chamfer
+import cyccon.auxiliary.dataset_shapenet as dataset_shapenet
+import cyccon.auxiliary.dataset_dfaust as dataset_dfaust
+import cyccon.auxiliary.miou_shape as miou_shape
+import cyccon.training.triplet_point_cloud as triplet_point_cloud
+import cyccon.training.couple_point_cloud as couple_point_cloud
+from cyccon.training.abstract_trainer import AbstractTrainer
+import jblib.file_sys as jbfs
+
 
 class Trainer(AbstractTrainer):
-    def __init__(self, opt):
-        super().__init__(opt)
+    def __init__(self, opt, verbose=True):
+        super().__init__(opt, verbose=verbose)
         self.init_fix()
-        self.print_loss_info()
-        self.git_repo_path = "https://github.com/ThibaultGROUEIX/CycleConsistentDeformation/commit/"
+        if verbose:
+            self.print_loss_info()
+        self.git_repo_path = "https://github.com/bednarikjan/CycleConsistentDeformation/commit/"
         self.init_save_dict(opt)
-
+        self.writer_tr = SummaryWriter(jbfs.jn(opt.save_path, 'tr'))
 
     def print_loss_info(self):
         my_utils.cyan_print("LOSS")
@@ -34,10 +44,12 @@ class Trainer(AbstractTrainer):
         Create network architecture. Refer to auxiliary.model
         :return:
         """
-        network = model.AE_Meta_AtlasNet(hidden_sizes=self.opt.hidden_sizes,
-                                                skip_connections=self.opt.skip_connections,
-                                                encoder_type=self.opt.encoder_type,
-                                                resnet_layers=self.opt.resnet_layers)
+        network = model.AE_Meta_AtlasNet(
+            hidden_sizes=self.opt.hidden_sizes,
+            skip_connections=self.opt.skip_connections,
+            encoder_type=self.opt.encoder_type,
+            resnet_layers=self.opt.resnet_layers,
+            batchnorm=self.opt.batchnorm)
         network.cuda()  # put network on GPU
         network.apply(my_utils.weights_init)  # initialization of the weight
         if self.opt.model != "":
@@ -61,72 +73,110 @@ class Trainer(AbstractTrainer):
         """
         Create training dataset
         """
-        self.dataset_train = dataset_shapenet.ShapeNetSeg(mode=self.opt.mode,
-                                                                               knn=self.opt.knn,
-                                                                               num_neighbors=self.opt.num_neighbors,
-                                                                               normalization=self.opt.normalization,
-                                                                               class_choice=self.opt.cat,
-                                                                               data_augmentation_Z_rotation=True,
-                                                                               data_augmentation_Z_rotation_range=40,
-                                                                               anisotropic_scaling=self.opt.anisotropic_scaling,
-                                                                               npoints=self.opt.number_points,
-                                                                               random_translation=True)
-        self.dataloader_train = torch.utils.data.DataLoader(self.dataset_train, batch_size=self.opt.batch_size,
-                                                            shuffle=True, num_workers=int(self.opt.workers),
-                                                            drop_last=True)
-        self.len_dataset = len(self.dataset_train)
+        if self.opt.ds == 'shapenet':
+            self.dataset_train = dataset_shapenet.ShapeNetSeg(
+                mode=self.opt.mode,
+                knn=self.opt.knn,
+                num_neighbors=self.opt.num_neighbors,
+                normalization=self.opt.normalization,
+                class_choice=self.opt.cat,
+                data_augmentation_Z_rotation=True,
+                data_augmentation_Z_rotation_range=40,
+                anisotropic_scaling=self.opt.anisotropic_scaling,
+                npoints=self.opt.number_points,
+                random_translation=True)
+        elif self.opt.ds == 'dfaust':
+            mode = self.opt.dfaust_mode
+            mode_params = None
+            if mode == 'neighbors':
+                mode_params = {'max_frames': self.opt.dfaust_max_frames}
+            subjects = self.opt.dfaust_subject \
+                if self.opt.dfaust_subject == 'all' \
+                else [self.opt.dfaust_subject]
+            sequences = self.opt.dfaust_sequence \
+                if self.opt.dfaust_sequence == 'all' \
+                else [self.opt.dfaust_sequence]
+            self.dataset_train = dataset_dfaust.DatasetDFAUSTTriplets(
+                num_pts=self.opt.number_points, subjects=subjects,
+                sequences=sequences, mode=mode, mode_params=mode_params,
+                resample_pts=True, z_rot_range=40, knn=self.opt.knn,
+                num_neighbors=self.opt.num_neighbors)
 
+        self.dataloader_train = torch.utils.data.DataLoader(
+            self.dataset_train, batch_size=self.opt.batch_size,
+            shuffle=True, num_workers=int(self.opt.workers),
+            drop_last=True)
+        self.len_dataset = len(self.dataset_train)
 
     def build_dataset_test(self):
         """
         Create testing dataset
         """
-        self.dataset_test = dataset_shapenet.ShapeNetSeg(mode="TEST",
-                                                                              normalization=self.opt.normalization,
-                                                                              class_choice=self.opt.cat,
-                                                                              data_augmentation_Z_rotation=False,
-                                                                              data_augmentation_Z_rotation_range=40,
-                                                                              npoints=self.opt.number_points,
-                                                                              random_translation=False)
-        self.dataloader_test = torch.utils.data.DataLoader(self.dataset_test, batch_size=self.opt.batch_size,
-                                                           shuffle=False, num_workers=int(self.opt.workers),
-                                                           drop_last=True)
+        self.dataset_test = dataset_shapenet.ShapeNetSeg(
+            mode="TEST",
+            normalization=self.opt.normalization,
+            class_choice=self.opt.cat,
+            data_augmentation_Z_rotation=False,
+            data_augmentation_Z_rotation_range=40,
+            npoints=self.opt.number_points,
+            random_translation=False)
+        self.dataloader_test = torch.utils.data.DataLoader(
+            self.dataset_test, batch_size=self.opt.batch_size,
+            shuffle=False, num_workers=int(self.opt.workers),
+            drop_last=True)
         self.len_dataset_test = len(self.dataset_test)
 
     def build_dataset_train_for_matching(self):
         """
         Create training dataset for matching used at inference
         """
-        self.dataset_train = dataset_shapenet.ShapeNetSeg(mode="TRAIN", knn=False,
-                                                                               normalization=self.opt.normalization,
-                                                                               class_choice=self.opt.cat,
-                                                                               npoints=self.opt.number_points_eval,
-                                                                               data_augmentation_Z_rotation=False,
-                                                                               anisotropic_scaling=False,
-                                                                               sample=False,
-                                                                               shuffle=self.opt.randomize,
-                                                                               random_translation=False,
-                                                                               get_single_shape=True)
-        self.dataloader_train = torch.utils.data.DataLoader(self.dataset_train, batch_size=1,
-                                                            shuffle=self.opt.randomize,
-                                                            num_workers=int(self.opt.workers), drop_last=False)
+        if self.opt.ds == 'shapenet':
+            self.dataset_train = dataset_shapenet.ShapeNetSeg(
+                mode="TRAIN", knn=False,
+                normalization=self.opt.normalization,
+                class_choice=self.opt.cat,
+                npoints=self.opt.number_points_eval,
+                data_augmentation_Z_rotation=False,
+                anisotropic_scaling=False,
+                sample=False,
+                shuffle=self.opt.randomize,
+                random_translation=False,
+                get_single_shape=True)
+            shuffle = self.opt.randomize
+        elif self.opt.ds == 'dfaust':
+            subjects = self.opt.dfaust_subject \
+                if self.opt.dfaust_subject == 'all' \
+                else [self.opt.dfaust_subject]
+            sequences = self.opt.dfaust_sequence \
+                if self.opt.dfaust_sequence == 'all' \
+                else [self.opt.dfaust_sequence]
+            self.dataset_train = dataset_dfaust.DatasetDFAUSTTriplets(
+                num_pts=self.opt.number_points, subjects=subjects,
+                sequences=sequences, mode='random', resample_pts=True,
+                get_single_shape=True)
+            shuffle = False
+        self.dataloader_train = torch.utils.data.DataLoader(
+            self.dataset_train, batch_size=1,
+            shuffle=shuffle, num_workers=int(self.opt.workers), drop_last=False)
         self.len_dataset = len(self.dataset_train)
 
     def build_dataset_test_for_matching(self):
         """
         Create testing dataset for matching used at inference
         """
-        self.dataset_test = dataset_shapenet.ShapeNetSeg(mode="TEST", knn=False,
-                                                                              normalization=self.opt.normalization,
-                                                                              class_choice=self.opt.cat,
-                                                                              npoints=self.opt.number_points_eval,
-                                                                              data_augmentation_Z_rotation=False,
-                                                                              anisotropic_scaling=False,
-                                                                              sample=False,
-                                                                              random_translation=False,
-                                                                              get_single_shape=True)
-        self.dataloader_test = torch.utils.data.DataLoader(self.dataset_test, batch_size=1,
-                                                           shuffle=False, num_workers=1, drop_last=False)
+        self.dataset_test = dataset_shapenet.ShapeNetSeg(
+            mode="TEST", knn=False,
+            normalization=self.opt.normalization,
+            class_choice=self.opt.cat,
+            npoints=self.opt.number_points_eval,
+            data_augmentation_Z_rotation=False,
+            anisotropic_scaling=False,
+            sample=False,
+            random_translation=False,
+            get_single_shape=True)
+        self.dataloader_test = torch.utils.data.DataLoader(
+            self.dataset_test, batch_size=1,
+            shuffle=False, num_workers=1, drop_last=False)
         self.len_dataset_test = len(self.dataset_test)
         self.parts = self.dataset_train.part_category[self.opt.cat]
 
@@ -142,9 +192,8 @@ class Trainer(AbstractTrainer):
         """
         Create a useful vector for indexing batched pointcloud.
         """
-        self.fix = torch.arange(0, self.opt.batch_size).view(self.opt.batch_size, 1).repeat(1,
-                                                                                            self.opt.number_points).view(
-            -1).long().cuda() * self.opt.number_points
+        self.fix = torch.arange(0, self.opt.batch_size).view(self.opt.batch_size, 1).\
+                       repeat(1,self.opt.number_points).view(-1).long().cuda() * self.opt.number_points
 
 
 
@@ -224,12 +273,21 @@ class Trainer(AbstractTrainer):
             self.log.update("loss_train_cycleL2_3", self.triplet.loss_train_cycleL2_3)
 
         # SYNTHETIC DEFORMATION
-        if self.epoch < self.opt.epoch_reconstruct:
+        # if self.epoch < self.opt.epoch_reconstruct:
+        #     self.triplet.compute_loss_selfReconstruction(self.network)
+        #     loss_train_total = loss_train_total + 1.0 * self.triplet.loss_train_selfReconstruction_L2
+        #     self.log.update("loss_train_selfReconstruction_L2", self.triplet.loss_train_selfReconstruction_L2)
+        #
+        # elif self.opt.lambda_reconstruct != 0 and self.epoch > self.opt.epoch_reconstruct - 1:
+        #     self.triplet.compute_loss_selfReconstruction(self.network)
+        #     loss_train_total = loss_train_total + self.opt.lambda_reconstruct * self.triplet.loss_train_selfReconstruction_L2
+        #     self.log.update("loss_train_selfReconstruction_L2", self.triplet.loss_train_selfReconstruction_L2)
+        if self.total_iters < self.opt.iter_reconstruct:
             self.triplet.compute_loss_selfReconstruction(self.network)
             loss_train_total = loss_train_total + 1.0 * self.triplet.loss_train_selfReconstruction_L2
             self.log.update("loss_train_selfReconstruction_L2", self.triplet.loss_train_selfReconstruction_L2)
 
-        elif self.opt.lambda_reconstruct != 0 and self.epoch > self.opt.epoch_reconstruct - 1:
+        elif self.opt.lambda_reconstruct != 0 and self.total_iters > self.opt.iter_reconstruct - 1:
             self.triplet.compute_loss_selfReconstruction(self.network)
             loss_train_total = loss_train_total + self.opt.lambda_reconstruct * self.triplet.loss_train_selfReconstruction_L2
             self.log.update("loss_train_selfReconstruction_L2", self.triplet.loss_train_selfReconstruction_L2)
@@ -242,13 +300,19 @@ class Trainer(AbstractTrainer):
         self.optimizer.step()  # gradient update
 
         # VIZUALIZE
-        if self.iteration % 50 == 1 and self.opt.display:
-            self.visualizer.show_pointclouds(points=self.triplet.P2[0], Y=self.triplet.label2[0], title="train_B")
-            self.visualizer.show_pointclouds(points=self.triplet.P1[0], Y=self.triplet.label1[0], title="train_A")
-            self.visualizer.show_pointclouds(points=self.triplet.P2_P1[0], Y=self.triplet.label1[0],
-                                             title="train_B_reconstructed")
+        # if self.iteration % 50 == 1 and self.opt.display:
+        #     self.visualizer.show_pointclouds(points=self.triplet.P2[0], Y=self.triplet.label2[0], title="train_B")
+        #     self.visualizer.show_pointclouds(points=self.triplet.P1[0], Y=self.triplet.label1[0], title="train_A")
+        #     self.visualizer.show_pointclouds(points=self.triplet.P2_P1[0], Y=self.triplet.label1[0],
+        #                                      title="train_B_reconstructed")
 
         self.print_iteration_stats(loss_train_total)
+
+        # Report to TB.
+        if self.total_iters % self.opt.writer_period == 0:
+            self.writer_tr.add_scalar(
+                'loss_tot', loss_train_total, global_step=self.total_iters)
+            self.writer_tr.flush()
 
     def get_triplet(self, iterator):
         """
@@ -261,13 +325,14 @@ class Trainer(AbstractTrainer):
     def train_epoch(self):
         self.log.reset()
         self.network.train()
-        self.learning_rate_scheduler()
+        # self.learning_rate_scheduler()
         start = time.time()
         iterator = self.dataloader_train.__iter__()
         self.reset_iteration()
         while True:
             try:
                 self.get_triplet(iterator)
+                self.learning_rate_scheduler()
                 self.increment_iteration()
             except:
                 print(colored("end of train dataset", 'red'))

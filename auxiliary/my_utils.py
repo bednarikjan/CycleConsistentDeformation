@@ -2,6 +2,8 @@ import random
 import numpy as np
 from termcolor import colored
 import torch
+import yaml
+import os
 
 
 def uniformize_sizes(knn):
@@ -166,6 +168,18 @@ def print_arg(opt):
             + " : "
             + colored(str(opt.__dict__[a]), "cyan")
         )
+
+
+def save_args(opt, path_dir):
+    """ Saves the command line arguments as a dict to .yaml file.
+
+    Parameters:
+        opt (argparse.Namespace): arguments.
+        path_dir (str): Path to output dir.
+    """
+    args = vars(opt)
+    with open(os.path.join(path_dir, 'args.yaml'), 'w') as f:
+        yaml.dump(args, f)
 
 
 if __name__ == "__main__":

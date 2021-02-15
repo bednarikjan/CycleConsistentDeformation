@@ -43,16 +43,21 @@ class STN3d(nn.Module):
 
 
 class PointNetfeat(nn.Module):
-    def __init__(self, num_points=2500, global_feat=True, trans=False):
+    def __init__(self, num_points=2500, global_feat=True, trans=False,
+                 batchnorm=True):
         super(PointNetfeat, self).__init__()
+
+        self._batchnorm = batchnorm
+
         self.stn = STN3d(num_points=num_points)
         self.conv1 = torch.nn.Conv1d(3, 64, 1)
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
         self.conv3 = torch.nn.Conv1d(128, 1024, 1)
 
-        self.bn1 = torch.nn.BatchNorm1d(64)
-        self.bn2 = torch.nn.BatchNorm1d(128)
-        self.bn3 = torch.nn.BatchNorm1d(1024)
+        if self._batchnorm:
+            self.bn1 = torch.nn.BatchNorm1d(64)
+            self.bn2 = torch.nn.BatchNorm1d(128)
+            self.bn3 = torch.nn.BatchNorm1d(1024)
         self.trans = trans
 
         self.num_points = num_points
@@ -64,10 +69,16 @@ class PointNetfeat(nn.Module):
             x = x.transpose(2, 1)
             x = torch.bmm(x, trans)
             x = x.transpose(2, 1)
-        x = F.relu(self.bn1(self.conv1(x)))
-        pointfeat = x
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = self.bn3(self.conv3(x))
+        if self._batchnorm:
+            x = F.relu(self.bn1(self.conv1(x)))
+            pointfeat = x
+            x = F.relu(self.bn2(self.conv2(x)))
+            x = self.bn3(self.conv3(x))
+        else:
+            x = F.relu(self.conv1(x))
+            pointfeat = x
+            x = F.relu(self.conv2(x))
+            x = self.conv3(x)
         x, _ = torch.max(x, 2)
         x = x.view(-1, 1024)
         if self.trans:
